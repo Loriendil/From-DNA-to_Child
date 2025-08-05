@@ -44,9 +44,9 @@ class DnaMolecule:
         self.dna_length = self.codon_length * self.amount_of_codon * self.size
         self.epigenetic_marks = epigenetic_marks or {}
 
-        # генерирую цепь ДНК с направлением 5'-3'
+        # случайным образом генерирую цепь ДНК с направлением 5'-3'
         self.dna_5_to_3_strand = Strand("5'-3' direction of DNA",self.__set_dna_5_to_3_strand(self.dna_length))
-        # генерирую цепь ДНК с направлением 3'-5'
+        # генерирую цепь ДНК с направлением 3'-5' на базе цепи цепь ДНК с направлением 5'-3' по правилу Уотсона-Крика.
         self.dna_3_to_5_strand = Strand("3'-5' direction of DNA", self.__set_dna_3_to_5_strand(self.dna_5_to_3_strand.content))
 
     @staticmethod
@@ -82,7 +82,10 @@ class RnaMolecule:
         # Читаем ДНК с конца (3'->5') и заменяем нуклеотиды.
         self.mol_dna = mol_dna
         dna_to_rna = {'A': 'U', 'T': 'A', 'G': 'C', 'C': 'G'}
-        self.strand = Strand("", ''.join(dna_to_rna[nt] for nt in reversed(self.mol_dna.dna_3_to_5_strand.content)))
+        self.strand = Strand("a sequence of nucleotides complementary to the template DNA strand, "
+                             "synthesized by RNA polymerase in the 5' → 3' direction when"
+                             " reading the template DNA strand in the 3' → 5' direction",
+                             ''.join(dna_to_rna[nt] for nt in self.mol_dna.dna_3_to_5_strand.content))
 
         # Результатом работы конструктора до вызова метода splicing() пре-мРНК.
 
@@ -91,4 +94,5 @@ class RnaMolecule:
 
 class Protein:
     def __init__(self, mol_rna:RnaMolecule):
+        self.mol_rna = mol_rna
         pass
