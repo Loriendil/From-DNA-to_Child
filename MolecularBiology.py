@@ -20,7 +20,12 @@ GENETIC_CODE = {
     'GGU': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G'
 }
 
-class DNA_Molecule:
+class Strand:
+    def __init__(self, name:str, content:str):
+        self.name:str = name
+        self.content:str = content
+
+class DnaMolecule:
     """
     Класс молекулы ДНК
     Входные:
@@ -29,8 +34,8 @@ class DNA_Molecule:
     умноженной на число 61 кодонов (для человека 61),
     которыми кодируются все аминокислоты (для человека 20).
     Приватные:
-    Параметр dna_matrix: (строковое) матричная цепь ДНК (направление 5'-3').
-    Параметр dna_complement: (строковое) комплементарная цепь ДНК (направление 3'-5').
+    Параметр dna_5_to_3_strand: (строковое) цепь ДНК (направление 5'-3').
+    Параметр dna_3_to_5_strand: (строковое) цепь ДНК (направление 3'-5').
     """
     def __init__(self, epigenetic_marks=None):
         self.codon_length = 3
@@ -38,43 +43,52 @@ class DNA_Molecule:
         self.size = 1
         self.dna_length = self.codon_length * self.amount_of_codon * self.size
         self.epigenetic_marks = epigenetic_marks or {}
-        # генерирую матричную цепь ДНК
-        self.dna_matrix_strand = self.__set_dna_matrix_strand(self.dna_length)
-        # генерирую комплементарную цепь ДНК
-        self.dna_complement_strand = self.__set_dna_complement_strand(self.dna_matrix_strand)
+
+        # генерирую цепь ДНК с направлением 5'-3'
+        self.dna_5_to_3_strand = Strand("5'-3' direction of DNA",self.__set_dna_5_to_3_strand(self.dna_length))
+        # генерирую цепь ДНК с направлением 3'-5'
+        self.dna_3_to_5_strand = Strand("3'-5' direction of DNA", self.__set_dna_3_to_5_strand(self.dna_5_to_3_strand.content))
 
     @staticmethod
-    def __set_dna_matrix_strand(dna_length:int):
+    def __set_dna_5_to_3_strand(dna_length:int):
         dna_nucleotides = ['A', 'T', 'G', 'C']
         return ''.join(random.choices(dna_nucleotides, k=dna_length))
 
     @staticmethod
-    def __set_dna_complement_strand(dna_matrix:str):
+    def __set_dna_3_to_5_strand(dna_sequence:str):
         # Словари для быстрых преобразований
         dna_complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
-        return ''.join(dna_complement[nt] for nt in dna_matrix)
+        return ''.join(dna_complement[nt] for nt in dna_sequence)
 
     def __set_genetic_mutations(self):
         pass
 
-class RNA_Molecule:
+class RnaMolecule:
     """
     Класс молекулы РНК
     Входной:
-    Параметр complimentary_strand комплементарная цепь ДНК
+    Параметр экземпляр класса DnaMolecule, который является программной репрезентацией одной молекулы ДНК
     """
-    def __init__(self, mol_dna:DNA_Molecule):
-        """ Транскрибирует ДНК (5'->3') в РНК (5'->3').
-        Из сообщения нейросети:
-            Читаем ДНК в обратном порядке (от 3' к 5').
-            Одновременно заменяем нуклеотиды.
-            Объединяем в строку РНК 5'->3'.
+    def __init__(self, mol_dna:DnaMolecule):
+        """ Транскрипция ДНК (5'->3') в РНК (5'->3').
+        Тут реализуемся очень упрощённая работа РНК-полимеразы II, благодаря которой получается пре-мРНК:
+            1. Читаем ДНК в обратном порядке (от 3' к 5').
+            2. Одновременно заменяем нуклеотиды.
+            3. Объединяем в строку РНК 5'->3'.
+        За кадром работы конструктора остаётся моделирование сборки ферментного и белкового комплекса на регулярных
+        участках ДНК и начала процесса транскрипции (инициация), удлинение полинуклеотидной цепи РНК (элонгация),
+        окончание транскрипции (терминация).
         """
         # Читаем ДНК с конца (3'->5') и заменяем нуклеотиды.
         self.mol_dna = mol_dna
         dna_to_rna = {'A': 'U', 'T': 'A', 'G': 'C', 'C': 'G'}
-        self.strand = ''.join(dna_to_rna[nt] for nt in reversed(mol_dna.dna_complement_strand))
+        self.strand = Strand("", ''.join(dna_to_rna[nt] for nt in reversed(self.mol_dna.dna_3_to_5_strand.content)))
+
+        # Результатом работы конструктора до вызова метода splicing() пре-мРНК.
+
+    def splicing(self, sequence:Strand)->Strand:
+        pass
 
 class Protein:
-    def __init__(self, mol_rna:RNA_Molecule):
+    def __init__(self, mol_rna:RnaMolecule):
         pass
