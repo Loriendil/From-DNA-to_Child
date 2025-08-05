@@ -25,9 +25,11 @@ class DnaMolecule:
         self.epigenetic_marks = epigenetic_marks or {}
 
         # случайным образом генерирую цепь ДНК с направлением 5'-3'
-        self.dna_5_to_3_strand = Strand("5'-3' direction of DNA",self.__set_dna_5_to_3_strand(self.dna_length))
+        self.dna_5_to_3_strand = Strand("5'-3' direction of DNA",
+                                        self.__set_dna_5_to_3_strand(self.dna_length))
         # генерирую цепь ДНК с направлением 3'-5' на базе цепи цепь ДНК с направлением 5'-3' по правилу Уотсона-Крика.
-        self.dna_3_to_5_strand = Strand("3'-5' direction of DNA", self.__set_dna_3_to_5_strand(self.dna_5_to_3_strand.content))
+        self.dna_3_to_5_strand = Strand("3'-5' direction of DNA",
+                                        self.__set_dna_3_to_5_strand(self.dna_5_to_3_strand.content))
 
     @staticmethod
     def __set_dna_5_to_3_strand(dna_length:int):
@@ -76,7 +78,7 @@ class Protein:
     def __init__(self, mol_rna:RnaMolecule):
         self.mol_rna = mol_rna
         # Генетический код для трансляции
-        GENETIC_CODE = {
+        genetic_code = {
             'UUU': 'F', 'UUC': 'F', 'UUA': 'L', 'UUG': 'L',
             'CUU': 'L', 'CUC': 'L', 'CUA': 'L', 'CUG': 'L',
             'AUU': 'I', 'AUC': 'I', 'AUA': 'I', 'AUG': 'M',
