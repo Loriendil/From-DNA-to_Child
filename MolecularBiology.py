@@ -51,7 +51,7 @@ class RnaMolecule:
     Входной:
     Параметр экземпляр класса DnaMolecule, который является программной репрезентацией одной молекулы ДНК
     """
-    def __init__(self, mol_dna:DnaMolecule, gene_source:str = "3' → 5'"):
+    def __init__(self, mol_dna:DnaMolecule, gene_source:str = "3'-5' direction of DNA"):
         """ Транскрипция ДНК (5'->3') в РНК (5'->3').
         Тут реализуемся очень упрощённая работа РНК-полимеразы II, благодаря которой получается пре-мРНК:
             1. Читаем ДНК в обратном порядке (от 3' к 5').
@@ -65,14 +65,12 @@ class RnaMolecule:
         self.mol_dna = mol_dna
         dna_to_rna = {'A': 'U', 'T': 'A', 'G': 'C', 'C': 'G'}
         if gene_source == "3' → 5'":
-            self.strand = Strand("a sequence of nucleotides complementary to the template DNA strand, "
-                                 "synthesized by RNA polymerase in the 5' → 3' direction when"
-                                 " reading the template DNA strand in the 3' → 5' direction (3'-5' DNA strand)",
+            #a sequence of nucleotides complementary to the template DNA strand, synthesized by RNA polymerase in
+            #the 5' → 3' direction when reading the template DNA strand in the 3' → 5' direction.
+            self.strand = Strand("build according 3'-5' DNA strand",
                                  ''.join(dna_to_rna[nt] for nt in self.mol_dna.dna_3_to_5_strand.content))
         else:
-            self.strand = Strand("a sequence of nucleotides complementary to the template DNA strand, "
-                                 "synthesized by RNA polymerase in the 5' → 3' direction when"
-                                 " reading the template DNA strand in the 3' → 5' direction (5'-3' DNA strand)",
+            self.strand = Strand("build according 5'-3' DNA strand",
                                  ''.join(dna_to_rna[nt] for nt in self.mol_dna.dna_5_to_3_strand.content))
 
         # Кэпирование, полиаденилирование пропускаем, так как химические процессы в чистом виде нет цели симулировать.
