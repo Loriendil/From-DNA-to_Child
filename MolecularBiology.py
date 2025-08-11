@@ -20,7 +20,7 @@ class DnaMolecule:
     def __init__(self, epigenetic_marks=None):
         self.codon_length = 3
         self.amount_of_codon = 61
-        self.size = 1000
+        self.size = 1
         self.dna_length = self.codon_length * self.amount_of_codon * self.size
         self.epigenetic_marks = epigenetic_marks or {}
 
@@ -65,7 +65,7 @@ class RnaMolecule:
         self.mol_dna = mol_dna
         dna_to_rna = {'A': 'U', 'T': 'A', 'G': 'C', 'C': 'G'}
         self.pre_rna = Strand("", '')
-        if gene_source == "3' → 5'":
+        if gene_source == "3'-5' direction of DNA":
             #a sequence of nucleotides complementary to the template DNA strand, synthesized by RNA polymerase in
             #the 5' → 3' direction when reading the template DNA strand in the 3' → 5' direction.
             pre_rna = Strand("build according 3'-5' DNA strand",
