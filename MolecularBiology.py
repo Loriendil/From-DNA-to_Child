@@ -64,20 +64,23 @@ class RnaMolecule:
         # Читаем ДНК с конца (3'->5') и заменяем нуклеотиды.
         self.mol_dna = mol_dna
         dna_to_rna = {'A': 'U', 'T': 'A', 'G': 'C', 'C': 'G'}
+        self.pre_rna = Strand("", '')
         if gene_source == "3' → 5'":
             #a sequence of nucleotides complementary to the template DNA strand, synthesized by RNA polymerase in
             #the 5' → 3' direction when reading the template DNA strand in the 3' → 5' direction.
-            self.strand = Strand("build according 3'-5' DNA strand",
+            pre_rna = Strand("build according 3'-5' DNA strand",
                                  ''.join(dna_to_rna[nt] for nt in self.mol_dna.dna_3_to_5_strand.content))
         else:
-            self.strand = Strand("build according 5'-3' DNA strand",
+            pre_rna = Strand("build according 5'-3' DNA strand",
                                  ''.join(dna_to_rna[nt] for nt in self.mol_dna.dna_5_to_3_strand.content))
 
         # Кэпирование, полиаденилирование пропускаем, так как химические процессы в чистом виде нет цели симулировать.
         # Результатом работы конструктора до вызова метода splicing() пре-мРНК.
+        self.strand = self.splicing(pre_rna)
 
-    def splicing(self, sequence:Strand)->Strand:
-        pass
+    @staticmethod
+    def splicing(sequence:Strand)->Strand:
+        return sequence
 
 class Protein:
     def __init__(self, mol_rna:RnaMolecule):
