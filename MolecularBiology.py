@@ -1,173 +1,251 @@
-import hashlib, time, uuid, os
-from collections import defaultdict
-from typing import Tuple, Optional, Iterable, List
-import re, random
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Tuple
+import gzip
+import hashlib
+import os, re
+import random
 
-from Bio import SeqIO
-from Bio.Seq import Seq
-from Bio.SeqRecord import SeqRecord
-
-
+@dataclass
 class Strand:
-    def __init__(self, name: str, content: str):
-        self.name: str = name
-        self.content: str = content
+        name: str
+        content: str
 
+class Utility:
+    ALPHABET = "ACGT"
+    C2I = {c: i for i, c in enumerate(ALPHABET)}  # 'A'->0, 'C'->1, 'G'->2, 'T'->3
+    I2C = {i: c for c, i in C2I.items()}
+
+    # IUPAC-коды и комплементарность (в верхнем регистре)
+    _IUPAC = "ACGTRYSWKMBDHVN"
+    _RC = "TGCAYRWSMKVHDBN"  # A<->T, C<->G; R<->Y; S<->S; W<->W; K<->M; B<->V; D<->H; N<->N
+    RC_TABLE = str.maketrans(_IUPAC, _RC)
+
+    @staticmethod
+    def open_text_auto(path: str):
+        """Открываем как текст; поддерживаем .gz автоматически."""
+        if path.endswith(".gz"):
+            return gzip.open(path, "rt")
+        return open(path, "rt")
+
+    @staticmethod
+    def sha256_fasta_stream(path: str, *, include_headers: bool = False) -> bytes:
+        """
+        Стриминговый SHA-256 по FASTA: по умолчанию хэш только по нуклеотидам,
+        заголовки строк '>' пропускаем; пробелы/переводы строк игнорируем.
+        Возвращает байтовый digest (32 байта).
+        """
+        h = hashlib.sha256()
+        with Utility.open_text_auto(path) as f:
+            for line in f:
+                if not include_headers and line.startswith(">"):
+                    continue
+                s = line.strip().upper()
+                if s:
+                    h.update(s.encode("ascii"))
+        return h.digest()
+
+    @staticmethod
+    def reverse_complement(seq: str) -> str:
+        """Обратный комплемент с поддержкой IUPAC-кодов."""
+        return seq.upper().translate(Utility.RC_TABLE)[::-1]
+
+    @staticmethod
+    def weights_for_gc(gc: float = 0.41) -> Tuple[float, float, float, float]:
+        """
+        Целевые доли A,T,G,C при заданном GC (для человека ~0.41).
+        Возвращаем кортеж в порядке A,C,G,T? -> У нас порядок A,C,Г,T (см. C2I).
+        ВНИМАНИЕ: C2I = {A:0, C:1, G:2, T:3}
+        """
+        gc = min(max(gc, 0.0), 1.0)
+        at = 1.0 - gc
+        # вернём в порядке A, C, G, T
+        return (at / 2, gc / 2, gc / 2, at / 2)
+
+    @staticmethod
+    def kmer_to_index(kmer: str) -> int:
+        """Кодируем k-мер в целочисленный индекс по основанию 4."""
+        x = 0
+        for ch in kmer:
+            x = x * 4 + Utility.C2I[ch]
+        return x
+
+    @staticmethod
+    def index_to_kmer(idx: int, k: int) -> str:
+        """Обратное преобразование индекса -> k-мер."""
+        out = []
+        for _ in range(k):
+            out.append(Utility.I2C[idx % 4])
+            idx //= 4
+        return "".join(reversed(out))
+
+class BuildingMarkovModel:
+    ALPHABET = "ACGT"
+    C2I = {c: i for i, c in enumerate(ALPHABET)}  # 'A'->0, 'C'->1, 'G'->2, 'T'->3
+    I2C = {i: c for c, i in C2I.items()}
+
+    # IUPAC-коды и комплементарность (в верхнем регистре)
+    _IUPAC = "ACGTRYSWKMBDHVN"
+    _RC = "TGCAYRWSMKVHDBN"  # A<->T, C<->G; R<->Y; S<->S; W<->W; K<->M; B<->V; D<->H; N<->N
+    RC_TABLE = str.maketrans(_IUPAC, _RC)
+
+    @staticmethod
+    def markov_counts_from_fasta(path: str, k: int = 2) -> Dict[int, List[int]]:
+        """
+        Строит словарь counts: k-мер (индекс) -> [cA, cC, cG, cT].
+        Стримингово читает FASTA; окна, пересекающие не-ACGT символы (напр. 'N'), обнуляются.
+        """
+        if k <= 0:
+            raise ValueError("k должен быть >= 1")
+        counts: Dict[int, List[int]] = {}
+        # для сдвига окна: base = 4^(k-1)
+        base = 4 ** (k - 1)
+        prefix_idx = 0  # индекс k-мера для первых k букв
+        have = 0  # сколько валидных (ACGT) букв накопили подряд
+
+        with Utility.open_text_auto(path) as f:
+            for line in f:
+                if line.startswith(">"):
+                    continue
+                for ch in line.strip().upper():
+                    val = Utility.C2I.get(ch)
+                    if val is None:
+                        # встретили N или иной символ — разрываем окно
+                        have = 0
+                        prefix_idx = 0
+                        continue
+                    if have < k:
+                        # накапливаем первые k букв
+                        prefix_idx = prefix_idx * 4 + val
+                        have += 1
+                    else:
+                        # есть валидный префикс длины k, обновляем переход на val
+                        row = counts.get(prefix_idx)
+                        if row is None:
+                            row = [0, 0, 0, 0]
+                            counts[prefix_idx] = row
+                        row[val] += 1
+                        # сдвигаем окно: выкидываем старший символ, добавляем val
+                        prefix_idx = ((prefix_idx % base) * 4) + val
+        return counts
+
+    @staticmethod
+    def row_probs(row: List[int],
+                   alpha: float,
+                   gc_weights: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
+        """
+        Нормируем строку счётчиков в вероятности с псевдосчётчиками:
+        p ~ count + alpha * gc_weight.
+        Это аккуратно переносит глобальный GC-профиль на «редкие» контексты.
+        """
+        a, c, g, t = row
+        gwA, gwC, gwG, gwT = gc_weights
+        rA = a + alpha * gwA
+        rC = c + alpha * gwC
+        rG = g + alpha * gwG
+        rT = t + alpha * gwT
+        s = rA + rC + rG + rT
+        if s == 0:  # полностью пустая строка (не встретилась ни разу)
+            return (gwA, gwC, gwG, gwT)
+        return (rA / s, rC / s, rG / s, rT / s)
+
+    @staticmethod
+    def sample_idx_by_probs(probs: Tuple[float, float, float, float], rng: random.Random) -> int:
+        """Сэмплируем индекс 0..3 по распределению probs (кумулятивно)."""
+        r = rng.random()
+        cum = 0.0
+        for i, p in enumerate(probs):
+            cum += p
+            if r <= cum:
+                return i
+        return 3  # защита от потерь точности float
 
 class DnaMolecule:
     """
-    Класс молекулы ДНК
-    Входные:
-    Параметр dna_length: (целочисленное) длина ДНК состоит из
-    длины кодона в нуклеотидах (для человека 3)
-    умноженной на число 61 кодонов (для человека 61),
-    которыми кодируются все аминокислоты (для человека 20).
-    Приватные:
-    Параметр dna_5_to_3_strand: (строковое) цепь ДНК (направление 5'-3').
-    Параметр dna_3_to_5_strand: (строковое) цепь ДНК (направление 3'-5').
-    """
+        Синтетическая молекула ДНК, сгенерированная на основе:
+          • референтной хромосомы (FASTA),
+          • Марковской модели порядка k,
+          • детерминированного сида (SHA-256 от FASTA + run_id),
+          • и глобального GC-содержания для мягкого сглаживания.
+        """
 
-    def __init__(self, epigenetic_marks=None,
-                 length: int | None = None,
-                 run_id: str | None = None,
-                 gc: float = 0.41
-                 ):
-        self.codon_length = 3
-        self.amount_of_codon = 61
-        self.size = 1
+    def __init__(
+            self,
+            fasta_path: str,
+            length: int,
+            *,
+            k: int = 2,
+            gc: float = 0.41,
+            run_id: Optional[str] = None,
+            smoothing_alpha: float = 0.5,
+            seed_include_headers: bool = False,
+    ) -> None:
+        if length < max(16, k + 1):
+            raise ValueError("length слишком мал для генерации последовательности.")
+        if not os.path.exists(fasta_path):
+            raise FileNotFoundError(f"FASTA не найден: {fasta_path}")
 
-        self.dna_length = length or (self.codon_length * self.amount_of_codon * self.size)
-        self.epigenetic_marks = epigenetic_marks or {}
+        self.k = k
+        self.length = length
+        self.gc = gc
+        self.run_id = run_id
 
-        # 1) Получаем семя. Если хотите воспроизводимость — передайте run_id (строка).
-        self.run_id = run_id or str(uuid.uuid4())
-        # seed = self.derive_seed(deterministic_key=self.run_id)
-        #
-        # # 2) Генерируем 5'→3' с заданным GC (чуть ближе к «человеческому» профилю).
-        # stream = self.byte_stream(seed)
-        # seq5 = self.bytes_to_dna(stream, self.dna_length, self.weights_for_gc(gc))
-        #
-        # # 3) Вторая нить — обратный комплемент (а не просто комплемент без разворота).
-        # self.dna_5_to_3_strand = Strand("5'-3' direction of DNA", seq5)
-        # self.dna_3_to_5_strand = Strand("3'-5' direction of DNA", self.reverse_complement(seq5))
+        # 1) Стриминговый SHA-256 от FASTA
+        digest = Utility.sha256_fasta_stream(fasta_path, include_headers=seed_include_headers)
 
-        # 1. Загружаем FASTA-файл с реальной последовательностью нуклеотидов в память
-        in_fa = r'E:\local_repository\Python-repository\From-DNA-to_Child\split\chr1.fa'
-        real_dna: str = ''
-        with open(in_fa) as input_handle:
-            for record in SeqIO.parse(input_handle, "fasta"):
-                seq = Seq(str(record.seq).upper())
-                real_dna = str(seq)
+        # 2) Сид: смесь (FASTA_digest + run_id?) -> 64-битное целое
+        material = digest + (run_id.encode("utf-8") if run_id else b"")
+        seed64 = int.from_bytes(hashlib.sha256(material).digest()[:8], "big")
+        rng = random.Random(seed64)
 
-        # 2. Получаем семя. Если хотите воспроизводимость — передайте run_id (строка).
-        self.run_id = run_id or str(uuid.uuid4())
+        # 3) Модель Маркова: k-мер -> счётчики A/C/G/T
+        counts = BuildingMarkovModel.markov_counts_from_fasta(fasta_path, k=k)
 
-        # 3. Строим модель
-        order = 2  # Используем цепь 2-го порядка (зависимость от 2 предыдущих нуклеотидов)
-        model = self.build_markov_chain(real_dna, order)
+        # 4) Выбор стартового k-мера:
+        #    берём самый «массовый» (макс. сумма переходов),
+        #    чтобы старт не попадал в «мёртвую» зону.
+        if counts:
+            start_idx = max(counts.keys(), key=lambda i: sum(counts[i]))
+            seed_kmer = Utility.index_to_kmer(start_idx, k)
+        else:
+            # Если хромосома слишком короткая/пустая: старт — по GC весам
+            gw = Utility.weights_for_gc(gc)
+            seed_kmer = "".join(
+                Utility.I2C[BuildingMarkovModel.sample_idx_by_probs(gw, rng)] for _ in range(k)
+            )
 
-        # 4. Выбираем начальный контекст (например, случайный из модели)
-        seed_context = random.choice(list(model.keys()))
+        # 5) Генерация длиной `length`, включая seed_kmer в начало
+        gw = Utility.weights_for_gc(gc)
+        alpha = smoothing_alpha
+        base = 4 ** (k - 1)
 
-        # 5. Генерируем правдоподобную последовательность
-        generator = self.markov_dna_generator(seed_context, model, length=1000)
-        plausible_dna = ''.join(generator)
+        seq_chars: List[str] = list(seed_kmer)
+        prefix_idx = Utility.kmer_to_index(seed_kmer)
 
-        # 6. Вторая нить — обратный комплемент (а не просто комплемент без разворота).
-        self.dna_5_to_3_strand = Strand("5'-3' direction of DNA", plausible_dna)
-        self.dna_3_to_5_strand = Strand("3'-5' direction of DNA", self.reverse_complement(plausible_dna))
+        while len(seq_chars) < length:
+            row = counts.get(prefix_idx, [0, 0, 0, 0])
+            probs = BuildingMarkovModel.row_probs(row, alpha=alpha, gc_weights=gw)
+            nxt = BuildingMarkovModel.sample_idx_by_probs(probs, rng)
+            seq_chars.append(Utility.I2C[nxt])
+            prefix_idx = ((prefix_idx % base) * 4) + nxt
 
+        seq5to3 = "".join(seq_chars)
+
+        # 6) Вторая нить — обратный комплемент (биологически корректно)
+        self.dna_5_to_3_strand = Strand("5'-3' direction of DNA", seq5to3)
+        self.dna_3_to_5_strand = Strand("3'-5' direction of DNA", Utility.reverse_complement(seq5to3))
+
+    # Оставляю публичные методы, если они вам нужны:
     @staticmethod
-    def build_markov_chain(real_dna_sequence: str, order: int = 1) -> dict:
-        """
-        Строит модель Марковской цепи на основе реальной последовательности ДНК.
-        Возвращает словарь, где ключ - это кортеж из n предыдущих символов (контекст),
-        а значение - это список нуклеотидов, которые следуют за этим контекстом.
-        """
-        model = defaultdict(list)
-        for i in range(order, len(real_dna_sequence)):
-            context = tuple(real_dna_sequence[i - order:i])
-            next_char = real_dna_sequence[i]
-            model[context].append(next_char)
-        return model
-
-    @staticmethod
-    def markov_dna_generator(seed_context: tuple, markov_model: dict, length: int) -> Iterable[str]:
-        """
-        Генератор последовательности ДНК на основе модели Марковской цепи.
-        """
-        context = seed_context
-        for _ in range(length):
-            # Получаем возможные следующие символы для текущего контекста
-            next_options = markov_model.get(context, [])
-            if not next_options:
-                # Если контекст неизвестен (не был в обучающей выборке), выбираем случайно
-                next_char = random.choice('ATGC')
-            else:
-                # Выбираем случайный следующий символ из возможных
-                next_char = random.choice(next_options)
-            yield next_char
-            # Обновляем контекст: убираем первый символ и добавляем новый
-            context = context[1:] + (next_char,)
-
-    @staticmethod
-    def derive_seed(seed: bytes | None = None, *, deterministic_key: str | None = None) -> bytes:
+    def derive_seed(seed: Optional[bytes] = None, *, deterministic_key: Optional[str] = None) -> bytes:
+        """Совместимость с вашим API — может пригодиться в других сценариях."""
         if seed is not None:
             return hashlib.sha256(seed).digest()
         if deterministic_key is not None:
             return hashlib.sha256(deterministic_key.encode()).digest()
-        payload = f"{time.time_ns()}|{os.getpid()}|{uuid.getnode()}|{uuid.uuid4()}".encode()
+        # Неденерминированный fallback (обычно лучше избегать)
+        payload = f"{os.getpid()}|{os.urandom(16).hex()}".encode()
         return hashlib.sha256(payload).digest()
-
-    @staticmethod
-    def byte_stream(seed: bytes) -> Iterable[int]:
-        """
-        SHA-256 в режиме счётчика: на каждом шаге хешируем seed||counter и отдаём байты.
-        """
-        counter = 0
-        while True:
-            block = hashlib.sha256(seed + counter.to_bytes(8, 'big')).digest()
-            counter += 1
-            for b in block:
-                yield b
-
-    @staticmethod
-    def weights_for_gc(gc: float = 0.41) -> tuple[float, float, float, float]:
-        """
-        Доли A,T,G,C при заданном GC-содержании (для человека ~0.41).
-        """
-        gc = min(max(gc, 0.0), 1.0)
-        at = 1.0 - gc
-        return (at / 2, at / 2, gc / 2, gc / 2)  # A,T,G,C
-
-    @staticmethod
-    def bytes_to_dna(biter: Iterable[int], length: int,
-                     weights: tuple[float, float, float, float]) -> str:
-        """
-        Преобразует поток байт в ДНК с заданными частотами A/T/G/C.
-        Без 'random': просто пороговое сравнение в [0..255].
-        """
-        a, t, g, c = weights
-        tA = int(round(a * 256))
-        tT = tA + int(round(t * 256))
-        tG = tT + int(round(g * 256))
-        out = []
-        it = iter(biter)
-        for _ in range(length):
-            x = next(it)
-            if x < tA:
-                out.append('A')
-            elif x < tT:
-                out.append('T')
-            elif x < tG:
-                out.append('G')
-            else:
-                out.append('C')
-        return ''.join(out)
-
-    @staticmethod
-    def reverse_complement(dna: str) -> str:
-        return dna.translate(str.maketrans('ATGC', 'TACG'))[::-1]
 
     @staticmethod
     def __set_genetic_mutations(self):
@@ -181,38 +259,37 @@ class RnaMolecule:
     Параметр экземпляр класса DnaMolecule, который является программной репрезентацией одной молекулы ДНК
     """
 
-    def __init__(self, mol_dna: DnaMolecule, gene_source: str = "3'-5' direction of DNA"):
-        pass
-        # """ Транскрипция ДНК (5'->3') в РНК (5'->3').
-        # Тут реализуемся очень упрощённая работа РНК-полимеразы II, благодаря которой получается пре-мРНК:
-        #     1. Читаем ДНК в обратном порядке (от 3' к 5').
-        #     2. Одновременно заменяем нуклеотиды.
-        #     3. Объединяем в строку РНК 5'->3'.
-        # За кадром работы конструктора остаётся моделирование сборки ферментного и белкового комплекса на регулярных
-        # участках ДНК и начала процесса транскрипции (инициация), удлинение полинуклеотидной цепи РНК (элонгация),
-        # окончание транскрипции (терминация).
-        # """
-        # # Читаем ДНК с конца (3'->5') и заменяем нуклеотиды.
-        # self.name: str = 'mature mRNA'
-        # self.mol_dna = mol_dna
-        # dna_to_rna = {'A': 'U', 'T': 'A', 'G': 'C', 'C': 'G'}
-        #
-        # if gene_source == "3'-5' direction of DNA":
-        #     # шаблонная (antisense) нить -> комплементарная пре-мРНК
-        #     first_rna_transcript = Strand(
-        #         "from template (3'-5' DNA)",
-        #         ''.join(dna_to_rna[nt] for nt in self.mol_dna.dna_3_to_5_strand.content)
-        #     )
-        # else:
-        #     # Для кодирующей цепи: реверс + комплементарная замена
-        #     reversed_strand = self.mol_dna.dna_5_to_3_strand.content[::-1]
-        #     first_rna_transcript = Strand("from coding (5'-3' DNA)",
-        #                                   ''.join(dna_to_rna[nt] for nt in reversed_strand))
-        #
-        # # Кэпирование, полиаденилирование пропускаем, так как химические процессы в чистом виде нет цели симулировать.
-        # # Результатом работы конструктора до вызова метода splicing() пре-мРНК.
-        # pre_mrna: Strand = self.validate_rna_transcript(first_rna_transcript)
-        # self.strand, self.log = self.splicing(pre_mrna)
+    def __init__(self, mol_dna: DnaMolecule, gene_source: str = "3'-5' direction of DNA")->None:
+        """ Транскрипция ДНК (5'->3') в РНК (5'->3').
+        Тут реализуемся очень упрощённая работа РНК-полимеразы II, благодаря которой получается пре-мРНК:
+            1. Читаем ДНК в обратном порядке (от 3' к 5').
+            2. Одновременно заменяем нуклеотиды.
+            3. Объединяем в строку РНК 5'->3'.
+        За кадром работы конструктора остаётся моделирование сборки ферментного и белкового комплекса на регулярных
+        участках ДНК и начала процесса транскрипции (инициация), удлинение полинуклеотидной цепи РНК (элонгация),
+        окончание транскрипции (терминация).
+        """
+        # Читаем ДНК с конца (3'->5') и заменяем нуклеотиды.
+        self.name: str = 'mature mRNA'
+        self.mol_dna = mol_dna
+        dna_to_rna = {'A': 'U', 'T': 'A', 'G': 'C', 'C': 'G'}
+
+        if gene_source == "3'-5' direction of DNA":
+            # шаблонная (antisense) нить -> комплементарная пре-мРНК
+            first_rna_transcript = Strand(
+                "from template (3'-5' DNA)",
+                ''.join(dna_to_rna[nt] for nt in self.mol_dna.dna_3_to_5_strand.content)
+            )
+        else:
+            # Для кодирующей цепи: реверс + комплементарная замена
+            reversed_strand = self.mol_dna.dna_5_to_3_strand.content[::-1]
+            first_rna_transcript = Strand("from coding (5'-3' DNA)",
+                                          ''.join(dna_to_rna[nt] for nt in reversed_strand))
+
+        # Кэпирование, полиаденилирование пропускаем, так как химические процессы в чистом виде нет цели симулировать.
+        # Результатом работы конструктора до вызова метода splicing() пре-мРНК.
+        pre_mrna: Strand = self.validate_rna_transcript(first_rna_transcript)
+        self.strand, self.log = self.splicing(pre_mrna)
 
     @staticmethod
     def validate_rna_transcript(raw: Strand) -> Strand:
